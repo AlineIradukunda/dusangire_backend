@@ -37,6 +37,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
+    'core',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
@@ -47,6 +50,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
 ]
 
 ROOT_URLCONF = 'dusangire_backend.urls'
@@ -66,6 +71,13 @@ TEMPLATES = [
     },
 ]
 
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    )
+}
+
+
 WSGI_APPLICATION = 'dusangire_backend.wsgi.application'
 
 
@@ -74,8 +86,12 @@ WSGI_APPLICATION = 'dusangire_backend.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'dusangire-db',
+        'USER': 'postgres',
+        'PASSWORD': '1234567890',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 
@@ -98,6 +114,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+AUTH_USER_MODEL = 'core.AdminUser'
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
@@ -120,3 +137,5 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+CORS_ALLOW_ALL_ORIGINS = True
