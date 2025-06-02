@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import School, Contribution, Distribution
+from .models import School, Contribution, Distribution, Report
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -12,9 +12,23 @@ class SchoolSerializer(serializers.ModelSerializer):
 
 
 class ContributionSerializer(serializers.ModelSerializer):
+    schools = SchoolSerializer(many=True, read_only=True)
+    school_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False
+    )
+
     class Meta:
         model = Contribution
-        fields = ['id', 'contributor_name', 'payment_method', 'amount', 'timestamp']
+        fields = ['id', 'contributor_name', 'payment_method', 'amount', 'contribution_type', 'schools', 'school_ids', 'timestamp']
+
+    def create(self, validated_data):
+        school_ids = validated_data.pop('school_ids', [])
+        contribution = Contribution.objects.create(**validated_data)
+        if school_ids:
+            contribution.schools.set(school_ids)
+        return contribution
 
 
 class AdminUserSerializer(serializers.ModelSerializer):
@@ -31,4 +45,10 @@ class DistributionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Distribution
         fields = ['id', 'school', 'school_name', 'amount', 'distributed_on']
+
+class ReportSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Report
+        fields = '__all__'
 
