@@ -22,16 +22,25 @@ class Distribution(models.Model):
     def __str__(self):
         return f"{self.school.name} - {self.amount}"
 
-class Contribution(models.Model):
-    contributor_name = models.CharField(max_length=100, blank=True)
-    payment_method = models.CharField(max_length=50, choices=[('momo', 'MoMo'), ('bank', 'Bank')])
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+class TransferReceived(models.Model):
+    DONOR_CHOICES = [
+        ('METRO WORLD CHILD', 'METRO WORLD CHILD'),
+        ('Indiv through MoMo', 'Indiv through MoMo'),
+        ('IREMBO', 'IREMBO'),
+        ('MTN RWANDACELL LTD', 'MTN RWANDACELL LTD')
+    ]
+    
+    SchoolCode = models.CharField(max_length=100, blank=True)
+    Donor = models.CharField(max_length=50, choices=DONOR_CHOICES)
+    Total_Amount = models.DecimalField(max_digits=10, decimal_places=2)
     contribution_type = models.CharField(max_length=50, choices=[('general', 'General'), ('specific', 'Specific')], default='general')
-    schools = models.ManyToManyField(School, blank=True)
+    SchoolName = models.ManyToManyField(School, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
+    AccountNumber = models.CharField(max_length=50, blank=True, null=True)
+    NumberOfTransactions = models.IntegerField(default=0)
 
     def __str__(self):
-        return f"{self.contributor_name or 'Anonymous'} - {self.amount}"
+        return f"{self.SchoolCode or 'Anonymous'} - {self.Total_Amount}"
 
 class AdminUser(AbstractUser):
     is_super_admin = models.BooleanField(default=False)
