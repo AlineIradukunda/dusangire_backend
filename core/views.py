@@ -69,6 +69,21 @@ class ReportListCreateAPIView(generics.ListCreateAPIView):
 
 
 # 🔹 Upload Transfers from Excel
+def clean_number(value):
+    """Helper function to clean numeric values"""
+    if not value:
+        return '0'
+    try:
+        # Handle string representations with commas
+        if isinstance(value, str):
+            value = value.replace(',', '')
+        # Convert to float first to handle Excel number formats
+        float_val = float(str(value))
+        # Convert to string without scientific notation
+        return f"{float_val:.0f}"
+    except (ValueError, TypeError):
+        return '0'
+
 class TransferExcelUploadView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
@@ -109,10 +124,21 @@ class TransferExcelUploadView(APIView):
                     donor_value = str(row[col_indices['donor']].value or '').strip()
                     school_name = str(row[col_indices['school_name']].value or '').strip()
 
-                    # Validate donor value
-                    if donor_value not in ['Indiv through MoMo', 'METRO WORLD CHILD', 'IREMBO', 'MTN RWANDACELL LTD']:
-                        errors.append(f'Row {row_idx}: Invalid donor value.')
+                    # Updated donor validation with exact matches
+                    valid_donors = [
+                        'Indiv through MoMo',
+                        'METRO WORLD CHILD',
+                        'IREMBO',
+                        'MTN RWANDACELL LTD'
+                    ]
+
+                    # Case-insensitive donor matching
+                    donor_match = next((d for d in valid_donors if d.lower() == donor_value.lower()), None)
+                    if not donor_match:
+                        errors.append(f'Row {row_idx}: Invalid donor value "{donor_value}". Must be one of: {", ".join(valid_donors)}')
                         continue
+                    
+                    donor_value = donor_match  # Use the correctly cased donor value
 
                     # Find or create school
                     if school_name:
@@ -124,23 +150,25 @@ class TransferExcelUploadView(APIView):
                         errors.append(f'Row {row_idx}: School name is required')
                         continue
 
-                    # Add account number handling
+                    # Clean and convert total amount
+                    total_amount = row[col_indices['total_amount']].value
+                    total_amount = clean_number(total_amount)
+
+                    # Handle account number
                     account_number = row[col_indices['account_number']].value
                     if account_number:
                         try:
-                            account_number = str(int(float(str(account_number))))
+                            account_number = clean_number(account_number)
                         except (ValueError, TypeError):
-                            account_number = ''  # Allow blank values
-                    else:
-                        account_number = ''  # Keep it blank if no value
+                            account_number = ''
 
                     transfer_data = {
                         'SchoolCode': str(row[col_indices['school_code']].value or '').strip(),
                         'Donor': donor_value,
-                        'Total_Amount': Decimal(str(row[col_indices['total_amount']].value or 0)),
-                        'AccountNumber': account_number,  # Pass through blank values
-                        'NumberOfTransactions': int(float(str(row[col_indices['number_of_transactions']].value or 0))),
-                        'contribution_type': 'general'  # 🔹 Add default value
+                        'Total_Amount': Decimal(total_amount),
+                        'AccountNumber': account_number,
+                        'NumberOfTransactions': int(float(clean_number(row[col_indices['number_of_transactions']].value or 0))),
+                        'contribution_type': 'general'
                     }
 
                     serializer = TransferReceivedSerializer(data=transfer_data)
@@ -166,7 +194,7 @@ class TransferExcelUploadView(APIView):
             return Response(response_data, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            print(f"Upload failed: {e}")  # Optional debug log
+            print(f"Upload failed: {str(e)}")  # More detailed error logging
             return Response({
                 'error': f'Error processing file: {str(e)}'
             }, status=status.HTTP_400_BAD_REQUEST)
