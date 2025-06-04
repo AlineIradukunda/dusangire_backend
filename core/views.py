@@ -74,13 +74,14 @@ def clean_number(value):
     if not value:
         return '0'
     try:
-        # Handle string representations with commas
+        # Handle string representations with commas and spaces
         if isinstance(value, str):
-            value = value.replace(',', '')
+            # Remove commas and spaces
+            value = value.replace(',', '').replace(' ', '')
         # Convert to float first to handle Excel number formats
         float_val = float(str(value))
-        # Convert to string without scientific notation
-        return f"{float_val:.0f}"
+        # Return as integer string without decimals
+        return str(int(float_val))
     except (ValueError, TypeError):
         return '0'
 
@@ -152,7 +153,15 @@ class TransferExcelUploadView(APIView):
 
                     # Clean and convert total amount
                     total_amount = row[col_indices['total_amount']].value
-                    total_amount = clean_number(total_amount)
+                    if total_amount:
+                        try:
+                            cleaned_amount = clean_number(total_amount)
+                            total_amount = Decimal(cleaned_amount)
+                        except (ValueError, TypeError, decimal.InvalidOperation):
+                            errors.append(f'Row {row_idx}: Invalid amount format')
+                            continue
+                    else:
+                        total_amount = Decimal('0')
 
                     # Handle account number
                     account_number = row[col_indices['account_number']].value
@@ -165,7 +174,7 @@ class TransferExcelUploadView(APIView):
                     transfer_data = {
                         'SchoolCode': str(row[col_indices['school_code']].value or '').strip(),
                         'Donor': donor_value,
-                        'Total_Amount': Decimal(total_amount),
+                        'Total_Amount': total_amount,
                         'AccountNumber': account_number,
                         'NumberOfTransactions': int(float(clean_number(row[col_indices['number_of_transactions']].value or 0))),
                         'contribution_type': 'general'
