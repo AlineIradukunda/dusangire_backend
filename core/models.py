@@ -23,15 +23,8 @@ class Distribution(models.Model):
         return f"{self.school.name} - {self.amount}"
 
 class TransferReceived(models.Model):
-    DONOR_CHOICES = [
-        ('METRO WORLD CHILD', 'METRO WORLD CHILD'),
-        ('Indiv through MoMo', 'Indiv through MoMo'),
-        ('IREMBO', 'IREMBO'),
-        ('MTN RWANDACELL LTD', 'MTN RWANDACELL LTD')
-    ]
-    
     SchoolCode = models.CharField(max_length=100, blank=True)
-    Donor = models.CharField(max_length=50, choices=DONOR_CHOICES)
+    Donor = models.CharField(max_length=200)
     Total_Amount = models.DecimalField(max_digits=10, decimal_places=2)
     contribution_type = models.CharField(max_length=50, choices=[('general', 'General'), ('specific', 'Specific')], default='general')
     SchoolName = models.ManyToManyField(School, blank=True)

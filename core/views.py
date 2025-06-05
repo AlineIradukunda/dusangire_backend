@@ -6,6 +6,7 @@ from django.contrib.auth import get_user_model
 from openpyxl import load_workbook
 from decimal import Decimal
 
+
 from .models import School, TransferReceived, Distribution, Report
 from .serializers import (
     SchoolSerializer, TransferReceivedSerializer, 
@@ -124,22 +125,6 @@ class TransferExcelUploadView(APIView):
                 try:
                     donor_value = str(row[col_indices['donor']].value or '').strip()
                     school_name = str(row[col_indices['school_name']].value or '').strip()
-
-                    # Updated donor validation with exact matches
-                    valid_donors = [
-                        'Indiv through MoMo',
-                        'METRO WORLD CHILD',
-                        'IREMBO',
-                        'MTN RWANDACELL LTD'
-                    ]
-
-                    # Case-insensitive donor matching
-                    donor_match = next((d for d in valid_donors if d.lower() == donor_value.lower()), None)
-                    if not donor_match:
-                        errors.append(f'Row {row_idx}: Invalid donor value "{donor_value}". Must be one of: {", ".join(valid_donors)}')
-                        continue
-                    
-                    donor_value = donor_match  # Use the correctly cased donor value
 
                     # Find or create school
                     if school_name:
