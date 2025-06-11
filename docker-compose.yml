@@ -1,35 +1,19 @@
+version: '3.8'
+
 services:
+  frontend:
+    build: ./dusangire-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./dusangire-frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://backend:8000
+
   backend:
-    build: .
+    build: ./dusangire_backend
     ports:
       - "8000:8000"
-    depends_on:
-      - db
-    environment:
-      - POSTGRES_NAME=dusangire-db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=1234567890
-      - POSTGRES_HOST=db
-      - DJANGO_SUPERUSER_USERNAME=admin
-      - DJANGO_SUPERUSER_EMAIL=admin@example.com
-      - DJANGO_SUPERUSER_PASSWORD=admin123
     volumes:
-      - .:/app
-    command: >
-      sh -c "python manage.py migrate &&
-             python manage.py createsuperuser --noinput || true &&
-             python manage.py runserver 0.0.0.0:8000"
-
-  db:
-    image: postgres:15
-    ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_DB=dusangire-db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=1234567890
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  postgres_data:
+      - ./dusangire_backend:/app
