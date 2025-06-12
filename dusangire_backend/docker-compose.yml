@@ -17,12 +17,12 @@ services:
   frontend:
     build: ./dusangire-frontend
     ports:
-      - "3000:3000"
+      - "3000:5173"
     depends_on:
       - backend
 
   db:
-    image: postgres:13
+    image: postgres:15
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
