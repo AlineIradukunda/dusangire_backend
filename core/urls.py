@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .views import health_check
 
 urlpatterns = [
     path('schools/', views.SchoolListCreateAPIView.as_view(), name='school-list'),
@@ -12,5 +13,6 @@ urlpatterns = [
     path('transfers/upload/', views.TransferExcelUploadView.as_view(), name='transfer-upload'),
     path('reports/generate/', views.GenerateReportView.as_view(), name='generate-report'),
     path('transaction-summary/', views.TransactionSummaryView.as_view(), name='transaction-summary'),
+    path('health/', health_check, name='health_check'),
 ]
 

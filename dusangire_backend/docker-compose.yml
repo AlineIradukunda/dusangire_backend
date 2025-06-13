@@ -17,7 +17,14 @@ services:
   frontend:
     build: ./dusangire-frontend
     ports:
-      - "3000:5173"
+      - "3000:5173" # Changed back to original port
+    volumes:
+      - ./dusangire-frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    working_dir: /app
+    command: npm run dev -- --host
     depends_on:
       - backend
 

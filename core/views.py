@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from openpyxl import load_workbook
 from decimal import Decimal
 import csv
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 import xlsxwriter
 from io import BytesIO
 from datetime import datetime
@@ -19,6 +19,10 @@ from .serializers import (
 from .utils import generate_pdf_report
 
 User = get_user_model()
+
+# Health check endpoint
+def health_check(request):
+    return JsonResponse({"status": "healthy"})
 
 # 🔹 School List/Create View
 class SchoolListCreateAPIView(generics.ListCreateAPIView):
