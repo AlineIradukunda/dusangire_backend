@@ -239,12 +239,12 @@ class TransferExcelUploadView(APIView):
             return Response({'error': str(e)}, status=500)
 # ✅ Distribution Views
 class DistributionListCreateAPIView(generics.ListCreateAPIView):
-    queryset = Distribution.objects.all().order_by('-distributed_on')
+    queryset = Distribution.objects.filter(delete_status__in=["active", "pending"]).order_by('-distributed_on')
     serializer_class = DistributionSerializer
     permission_classes = [IsAuthenticated]
 
 class DistributionListAPIView(generics.ListAPIView):
-    queryset = Distribution.objects.all().order_by('-distributed_on')
+    queryset = Distribution.objects.filter(delete_status__in=["active", "pending"]).order_by('-distributed_on')
     serializer_class = DistributionSerializer
 
 class MarkDistributionPendingDelete(APIView):
@@ -278,10 +278,6 @@ class ConfirmDistributionDeletion(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, pk):
-        if dist.delete_status != "pending":
-            return Response({"error": "Distribution is not marked for deletion."}, status=400)
-
-
         try:
             dist = Distribution.objects.get(pk=pk)
         except Distribution.DoesNotExist:
@@ -290,6 +286,9 @@ class ConfirmDistributionDeletion(APIView):
         role = check_user_role(request)
         if role["status"] != "ok" or role["role"] != "superuser":
             return Response({"error": "Only superusers can confirm deletions."}, status=403)
+
+        if dist.delete_status != "pending":
+            return Response({"error": "Distribution is not marked for deletion."}, status=400)
 
         dist.delete_status = "deleted"
         dist.save()
