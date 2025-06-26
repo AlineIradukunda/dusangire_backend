@@ -1,7 +1,7 @@
 from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.parsers import MultiPartParser, FormParser  # Add this line
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import get_user_model
 from openpyxl import load_workbook
 from decimal import Decimal
@@ -10,42 +10,325 @@ from django.http import HttpResponse, JsonResponse
 import xlsxwriter
 from io import BytesIO
 from datetime import datetime
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 
-from .models import School, TransferReceived, Distribution, Report
+from .models import (
+    School, TransferReceived, Distribution, Report
+)
 from .serializers import (
-    SchoolSerializer, TransferReceivedSerializer, 
-    DistributionSerializer, ReportSerializer, AdminUserSerializer
+    SchoolSerializer, TransferReceivedSerializer,
+    DistributionSerializer, ReportSerializer, AdminUserSerializer,
+    MyTokenObtainPairSerializer, 
 )
 from .utils import generate_pdf_report
+from rest_framework import status
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import permissions, generics
+from django.shortcuts import get_object_or_404
+
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+def mark_transfer_as_pending_delete(request, pk):
+    try:
+        transfer = TransferReceived.objects.get(pk=pk)
+    except TransferReceived.DoesNotExist:
+        return Response({"error": "Transfer not found"}, status=404)
+
+    user = request.user
+    role = check_user_role(request)
+    if role["role"] not in ["admin", "superuser"]:
+        return Response({"error": "Only admins or superusers can request deletion."}, status=403)
+
+
+    reason = request.data.get("delete_reason", "")
+    transfer.delete_status = "pending"
+    transfer.delete_reason = reason
+    transfer.save()
+    return Response({"message": "Marked as pending deletion."})
+
+
+class MyTokenObtainPairView(TokenObtainPairView):
+    serializer_class = MyTokenObtainPairSerializer
+
+
 
 User = get_user_model()
 
-# Health check endpoint
+# ✅ Role check helper
+def check_user_role(request):
+    user = request.user
+    if not user.is_authenticated:
+        return {"status": "error", "message": "Authentication required", "code": 401}
+    if user.is_superuser:
+        return {"status": "ok", "role": "superuser"}
+    elif user.is_staff:
+        return {"status": "ok", "role": "admin"}
+    else:
+        return {"status": "error", "message": "Unauthorized - Not admin", "code": 403}
+
+# ✅ API view to return only the role
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def check_user_role_view(request):
+    user = request.user
+    if user.is_superuser:
+        return Response({"role": "superadmin"})
+    elif user.is_staff:
+        return Response({"role": "admin"})
+    return Response({"role": "unauthorized"}, status=403)
+
+# ✅ Health Check
 def health_check(request):
     return JsonResponse({"status": "healthy"})
 
-# 🔹 School List/Create View
+
+def is_superuser_or_403(request):
+    if not request.user.is_authenticated:
+        return Response({"detail": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
+    if not request.user.is_superuser:
+        return Response({"detail": "You do not have permission to perform this action"}, status=status.HTTP_403_FORBIDDEN)
+    return None  # means allowed
+# ✅ School Views
+
 class SchoolListCreateAPIView(generics.ListCreateAPIView):
-    queryset = School.objects.all()
+    queryset = School.objects.filter(delete_status__in=['active', 'pending']).order_by('-created_at')
     serializer_class = SchoolSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
+# 🔁 Mark school as pending delete
+class MarkSchoolPendingDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
 
-# 🔹 Transfer List/Create View
+    def put(self, request, pk):
+        school = get_object_or_404(School, pk=pk)
+        reason = request.data.get("delete_reason")
+
+        if not reason:
+            return Response({"detail": "Reason for deletion is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        school.delete_status = "pending"
+        school.delete_reason = reason
+        school.save()
+        return Response({"detail": "School marked as pending deletion."})
+
+# ✅ Recover a pending-deleted school
+class RecoverSchoolView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request, pk):
+        school = get_object_or_404(School, pk=pk)
+
+        if school.delete_status != "pending":
+            return Response({"detail": "Only schools with pending deletion can be recovered."}, status=400)
+
+        school.delete_status = "active"
+        school.delete_reason = ""
+        school.save()
+        return Response({"detail": "School successfully recovered."})
+
+# ❌ Confirm deletion by superuser
+class ConfirmSchoolDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        school = get_object_or_404(School, pk=pk)
+
+        if not request.user.is_superuser:
+            return Response({"detail": "Only superusers can confirm deletion."}, status=403)
+
+        if school.delete_status != "pending":
+            return Response({"detail": "School is not marked for deletion."}, status=400)
+
+        school.delete_status = "deleted"
+        school.save()
+        return Response({"detail": "School permanently deleted (soft)."})
+# ✅ Transfer Views
 class TransferReceivedListCreateAPIView(generics.ListCreateAPIView):
-    queryset = TransferReceived.objects.all()
     serializer_class = TransferReceivedSerializer
     permission_classes = [permissions.AllowAny]
 
+    def get_queryset(self):
+        return TransferReceived.objects.filter(delete_status__in=['active', 'pending']).order_by('-timestamp')
 
-# 🔹 Admin Users List
-class AdminUserListAPIView(generics.ListAPIView):
-    queryset = User.objects.all()
-    serializer_class = AdminUserSerializer
-    permission_classes = [permissions.IsAdminUser]
+class ConfirmTransferDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        try:
+            transfer = TransferReceived.objects.get(pk=pk)
+        except TransferReceived.DoesNotExist:
+            return Response({"error": "Transfer not found."}, status=404)
+
+        role = check_user_role(request)
+        if role["status"] != "ok" or role["role"] != "superuser":
+            return Response({"error": "Only superusers can confirm deletions."}, status=403)
+
+        if transfer.delete_status != "pending":
+            return Response({"error": "Transfer is not marked for deletion."}, status=400)
+
+        transfer.delete_status = "deleted"
+        transfer.save()
+        return Response({"message": "Transfer marked as deleted."}, status=200)
 
 
-# 🔹 Simulate MoMo Payment (For Testing)
+
+class TransferExcelUploadView(APIView):
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
+        if role["role"] != "superuser":
+            return Response({"detail": "Only superusers can upload transfers via Excel."}, status=403)
+
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return Response({'error': 'No file uploaded.'}, status=400)
+
+        try:
+            workbook = load_workbook(file_obj)
+            sheet = workbook.active
+
+            headers = [cell.value for cell in sheet[1]]
+            col_index = {header.strip().lower(): idx for idx, header in enumerate(headers)}
+
+            required_columns = ['school_code', 'donor', 'amount', 'school_name']
+            for col in required_columns:
+                if col not in col_index:
+                    return Response({'error': f'Missing required column: {col}'}, status=400)
+
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                school_code = row[col_index['school_code']]
+                donor = row[col_index['donor']]
+                amount = row[col_index['amount']]
+                school_name = row[col_index['school_name']]
+                account_number = row[col_index.get('account_number', -1)]
+                number_of_transactions = row[col_index.get('number_of_transactions', -1)]
+                contribution_type = row[col_index.get('contribution_type', -1)]
+
+                # Make sure we handle missing optional fields
+                account_number = account_number if account_number else ""
+                number_of_transactions = int(number_of_transactions) if number_of_transactions else 0
+                contribution_type = contribution_type if contribution_type else None
+
+                # Find all matching schools
+                matching_schools = School.objects.filter(name__iexact=school_name)
+
+                transfer = TransferReceived.objects.create(
+                    SchoolCode=school_code,
+                    Donor=donor,
+                    Amount=Decimal(amount),
+                    AccountNumber=account_number,
+                    NumberOfTransactions=number_of_transactions,
+                    contribution_type=contribution_type
+                )
+
+                if matching_schools.exists():
+                    transfer.SchoolName.set(matching_schools)
+
+            return Response({'message': 'Transfers uploaded successfully.'}, status=201)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+# ✅ Distribution Views
+class DistributionListCreateAPIView(generics.ListCreateAPIView):
+    queryset = Distribution.objects.all().order_by('-distributed_on')
+    serializer_class = DistributionSerializer
+    permission_classes = [IsAuthenticated]
+
+class DistributionListAPIView(generics.ListAPIView):
+    queryset = Distribution.objects.all().order_by('-distributed_on')
+    serializer_class = DistributionSerializer
+
+class MarkDistributionPendingDelete(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request, pk):
+        try:
+            dist = Distribution.objects.get(pk=pk)
+        except Distribution.DoesNotExist:
+            return Response({"error": "Distribution not found."}, status=404)
+
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
+
+        if role["role"] not in ["admin", "superuser"]:
+            return Response({"error": "Only admins can request deletion."}, status=403)
+
+        reason = request.data.get("delete_reason")
+        if not reason:
+            return Response({"error": "Delete reason is required."}, status=400)
+
+        dist.delete_status = "pending"
+        dist.delete_reason = reason
+        dist.save()
+
+        return Response({"message": "Marked as pending deletion."}, status=200)
+
+
+class ConfirmDistributionDeletion(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        if dist.delete_status != "pending":
+            return Response({"error": "Distribution is not marked for deletion."}, status=400)
+
+
+        try:
+            dist = Distribution.objects.get(pk=pk)
+        except Distribution.DoesNotExist:
+            return Response({"error": "Distribution not found."}, status=404)
+
+        role = check_user_role(request)
+        if role["status"] != "ok" or role["role"] != "superuser":
+            return Response({"error": "Only superusers can confirm deletions."}, status=403)
+
+        dist.delete_status = "deleted"
+        dist.save()
+        return Response({"message": "Distribution marked as deleted."}, status=200)
+
+
+class RecoverDistribution(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request, pk):
+        try:
+            dist = Distribution.objects.get(pk=pk)
+        except Distribution.DoesNotExist:
+            return Response({"error": "Distribution not found."}, status=404)
+
+        role = check_user_role(request)
+        if role["status"] != "ok" or role["role"] not in ["admin", "superuser"]:
+            return Response({"error": "Not allowed to recover."}, status=403)
+
+        dist.delete_status = "active"
+        dist.delete_reason = ""
+        dist.save()
+        return Response({"message": "Distribution recovered."}, status=200)
+
+# ✅ Admin Users
+class AdminUserListAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
+        if role["role"] != "superuser":
+            return Response({"detail": "Only superusers can view all admin users."}, status=403)
+        admins = User.objects.all()
+        serializer = AdminUserSerializer(admins, many=True)
+        return Response(serializer.data)
+
+# ✅ Simulate MoMo Payment
 class SimulatePaymentAPIView(APIView):
     def post(self, request):
         serializer = TransferReceivedSerializer(data=request.data)
@@ -57,254 +340,146 @@ class SimulatePaymentAPIView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+# ✅ Report Views
+class ReportListCreateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
 
-# 🔹 Distribution Create
-class DistributionCreateAPIView(generics.CreateAPIView):
-    queryset = Distribution.objects.all()
-    serializer_class = DistributionSerializer
+    def get(self, request):
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
+        if role["role"] != "superuser":
+            return Response({"detail": "Only superusers can view reports."}, status=403)
+        reports = Report.objects.all().order_by('-generated_on')
+        serializer = ReportSerializer(reports, many=True)
+        return Response(serializer.data)
 
+    def post(self, request):
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
+        if role["role"] != "superuser":
+            return Response({"detail": "Only superusers can create reports."}, status=403)
+        serializer = ReportSerializer(data=request.data)
+        if serializer.is_valid():
+            report = serializer.save()
+            return Response(ReportSerializer(report).data, status=201)
+        return Response(serializer.errors, status=400)
 
-# 🔹 Distribution List
-class DistributionListAPIView(generics.ListAPIView):
-    queryset = Distribution.objects.all().order_by('-distributed_on')
-    serializer_class = DistributionSerializer
-
-
-# 🔹 Report List/Create
-class ReportListCreateAPIView(generics.ListCreateAPIView):
-    queryset = Report.objects.all().order_by('-generated_on')
-    serializer_class = ReportSerializer
-    permission_classes = [permissions.IsAdminUser]
-
-
-# 🔹 Upload Transfers from Excel
-def clean_number(value):
-    """Helper function to clean numeric values"""
-    if not value:
-        return '0'
-    try:
-        # Handle string representations with commas and spaces
-        if isinstance(value, str):
-            # Remove commas and spaces
-            value = value.replace(',', '').replace(' ', '')
-        # Convert to float first to handle Excel number formats
-        float_val = float(str(value))
-        # Return as integer string without decimals
-        return str(int(float_val))
-    except (ValueError, TypeError):
-        return '0'
-
-class TransferExcelUploadView(APIView):
-    parser_classes = (MultiPartParser, FormParser)
-
-    def post(self, request, *args, **kwargs):
-        excel_file = request.FILES.get('file')
-        if not excel_file:
-            return Response({'error': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            wb = load_workbook(excel_file)
-            ws = wb.active
-
-            # Clean headers from the first row
-            headers = [str(cell.value).lower().strip() if cell.value else '' for cell in ws[1]]
-
-            required_columns = [
-                'school_code', 'school_name', 'donor',
-                'total_amount', 'account_number', 'number_of_transactions'
-            ]
-
-            # Check for missing headers
-            missing_columns = [col for col in required_columns if col not in headers]
-            if missing_columns:
-                return Response({
-                    'error': f'Missing required columns: {", ".join(missing_columns)}\n\n'
-                             f'Expected columns: {", ".join(required_columns)}\n'
-                             f'Found columns: {", ".join(headers)}'
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            col_indices = {col: headers.index(col) for col in required_columns}
-
-            errors = []
-            transfers = []
-
-            # Loop through Excel rows (skip header)
-            for row_idx, row in enumerate(list(ws.rows)[1:], start=2):
-                try:
-                    donor_value = str(row[col_indices['donor']].value or '').strip()
-                    school_name = str(row[col_indices['school_name']].value or '').strip()
-
-                    # Find or create school
-                    if school_name:
-                        school, created = School.objects.get_or_create(
-                            name=school_name,
-                            defaults={'district': 'Unknown', 'sector': 'Unknown'}
-                        )
-                    else:
-                        errors.append(f'Row {row_idx}: School name is required')
-                        continue
-
-                    # Clean and convert total amount
-                    total_amount = row[col_indices['total_amount']].value
-                    if total_amount:
-                        try:
-                            cleaned_amount = clean_number(total_amount)
-                            total_amount = Decimal(cleaned_amount)
-                        except (ValueError, TypeError, decimal.InvalidOperation):
-                            errors.append(f'Row {row_idx}: Invalid amount format')
-                            continue
-                    else:
-                        total_amount = Decimal('0')
-
-                    # Handle account number
-                    account_number = row[col_indices['account_number']].value
-                    if account_number:
-                        try:
-                            account_number = clean_number(account_number)
-                        except (ValueError, TypeError):
-                            account_number = ''
-
-                    transfer_data = {
-                        'SchoolCode': str(row[col_indices['school_code']].value or '').strip(),
-                        'Donor': donor_value,
-                        'Total_Amount': total_amount,
-                        'AccountNumber': account_number,
-                        'NumberOfTransactions': int(float(clean_number(row[col_indices['number_of_transactions']].value or 0))),
-                        'contribution_type': 'general'
-                    }
-
-                    serializer = TransferReceivedSerializer(data=transfer_data)
-                    if serializer.is_valid():
-                        transfer = serializer.save()
-                        transfer.SchoolName.add(school)
-                        transfers.append(transfer)
-                    else:
-                        errors.append(f'Row {row_idx}: {serializer.errors}')
-
-                except (ValueError, TypeError, AttributeError) as e:
-                    errors.append(f'Row {row_idx}: Invalid data format - {str(e)}')
-                    continue
-
-            response_data = {
-                'message': f'Successfully created {len(transfers)} transfers',
-                'transfers': TransferReceivedSerializer(transfers, many=True).data
-            }
-
-            if errors:
-                response_data['warnings'] = errors
-
-            return Response(response_data, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            print(f"Upload failed: {str(e)}")  # More detailed error logging
-            return Response({
-                'error': f'Error processing file: {str(e)}'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-
-# 🔹 Generate Report View
+# ✅ Generate Report View
 class GenerateReportView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
-        format_type = request.query_params.get('format', 'excel')
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
+        if role["role"] != "superuser":
+            return Response({"detail": "Only superusers can generate reports."}, status=403)
 
-        # Validate dates
-        try:
-            start_date = datetime.strptime(start_date, '%Y-%m-%d')
-            end_date = datetime.strptime(end_date, '%Y-%m-%d')
-        except (ValueError, TypeError):
-            return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
+        pdf_content = generate_pdf_report()
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="report.pdf"'
+        return response
 
-        # Query transfers within date range
-        transfers = TransferReceived.objects.filter(
-            timestamp__date__gte=start_date,
-            timestamp__date__lte=end_date
-        ).order_by('timestamp')
-
-        if format_type == 'csv':
-            response = HttpResponse(content_type='text/csv')
-            response['Content-Disposition'] = f'attachment; filename="report_{start_date.date()}_{end_date.date()}.csv"'
-            
-            writer = csv.writer(response)
-            writer.writerow(['Date', 'School Code', 'Donor', 'Amount', 'Account Number', 'School Names'])
-            
-            for transfer in transfers:
-                writer.writerow([
-                    transfer.timestamp.strftime('%Y-%m-%d %H:%M'),
-                    transfer.SchoolCode,
-                    transfer.Donor,
-                    transfer.Total_Amount,
-                    transfer.AccountNumber,
-                    ', '.join(school.name for school in transfer.SchoolName.all())
-                ])
-            
-            return response
-        
-        else:  # Excel format
-            output = BytesIO()
-            workbook = xlsxwriter.Workbook(output)
-            worksheet = workbook.add_worksheet()
-
-            # Add headers
-            headers = ['Date', 'School Code', 'Donor', 'Amount', 'Account Number', 'School Names']
-            for col, header in enumerate(headers):
-                worksheet.write(0, col, header)
-
-            # Add data rows
-            for row, transfer in enumerate(transfers, 1):
-                worksheet.write(row, 0, transfer.timestamp.strftime('%Y-%m-%d %H:%M'))
-                worksheet.write(row, 1, transfer.SchoolCode)
-                worksheet.write(row, 2, transfer.Donor)
-                worksheet.write(row, 3, float(transfer.Total_Amount))
-                worksheet.write(row, 4, transfer.AccountNumber)
-                worksheet.write(row, 5, ', '.join(school.name for school in transfer.SchoolName.all()))
-
-            workbook.close()
-            output.seek(0)
-
-            response = HttpResponse(
-                output.read(),
-                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-            response['Content-Disposition'] = f'attachment; filename="report_{start_date.date()}_{end_date.date()}.xlsx"'
-            return response
-
-# 🔹 Transaction Summary View
+# ✅ Transaction Summary View
 class TransactionSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request):
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
+        transfers = TransferReceived.objects.all()
+        total_amount = sum(t.amount for t in transfers)
+        total_transfers = transfers.count()
+
+        return Response({
+            "total_transfers": total_transfers,
+            "total_amount": float(total_amount),
+        })
+class LoginAPIView(APIView):
+    def post(self, request):
+        username = request.data.get("username")
+        password = request.data.get("password")
+
+        if not username or not password:
+            return Response({"error": "Username and password are required."}, status=400)
+
+        user = authenticate(username=username, password=password)
+        if user is None:
+            return Response({"error": "Invalid credentials."}, status=401)
+
+        # Get JWT tokens
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+        refresh_token = str(refresh)
+
+        # Identify role
+        if user.is_superuser:
+            role = "superuser"
+        elif user.is_staff:
+            role = "admin"
+        else:
+            return Response({"error": "Unauthorized role."}, status=403)
+
+        return Response({
+            "access": access_token,
+            "refresh": refresh_token,
+            "role": role,
+            "username": user.username
+        }, status=200)
+
+class RecoverTransferView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        role = check_user_role(request)
+        if role["status"] != "ok":
+            return Response({"detail": role["message"]}, status=role["code"])
 
         try:
-            if start_date and end_date:
-                transfers = TransferReceived.objects.filter(
-                    timestamp__date__gte=start_date,
-                    timestamp__date__lte=end_date
-                )
-            else:
-                transfers = TransferReceived.objects.all()
+            transfer = TransferReceived.objects.get(pk=pk)
+            if transfer.delete_status != "pending":
+                return Response({"detail": "Only pending deletions can be recovered."}, status=400)
+            
+            transfer.delete_status = "active"
+            transfer.save()
+            return Response({"message": "Transfer recovered successfully."})
+        except TransferReceived.DoesNotExist:
+            return Response({"detail": "Transfer not found."}, status=404)
+        
 
-            # Group by school and calculate totals
-            summary = {}
-            for transfer in transfers:
-                for school in transfer.SchoolName.all():
-                    if school.id not in summary:
-                        summary[school.id] = {
-                            'school_name': school.name,
-                            'total_contributions': 0,
-                            'total_distributed': school.total_received,
-                        }
-                    summary[school.id]['total_contributions'] += float(transfer.Total_Amount)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def deleted_transfers_list(request):
+    # Check superuser permission
+    error_response = is_superuser_or_403(request)
+    if error_response:
+        return error_response
 
-            # Convert to list and calculate balances
-            summary_list = []
-            for data in summary.values():
-                data['balance'] = data['total_contributions'] - data['total_distributed']
-                summary_list.append(data)
+    deleted_transfers = TransferReceived.objects.filter(delete_status="deleted")
+    serializer = TransferReceivedSerializer(deleted_transfers, many=True)
+    return Response(serializer.data)
 
-            return Response(summary_list)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+
+def deleted_distributions_list(request):
+    error_response = is_superuser_or_403(request)
+    if error_response:
+        return error_response
+
+    deleted_distributions = Distribution.objects.filter(delete_status="deleted")
+    serializer = DistributionSerializer(deleted_distributions, many=True)
+    return Response(serializer.data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def deleted_schools_list(request):
+    error_response = is_superuser_or_403(request)
+    if error_response:
+        return error_response
+
+    deleted_schools = School.objects.filter(delete_status="deleted")
+    serializer = SchoolSerializer(deleted_schools, many=True)
+    return Response(serializer.data)
