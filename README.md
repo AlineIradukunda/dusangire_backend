@@ -22,7 +22,6 @@ Built with powerful technologies:
 * ReportLab & Pandas (for reporting)
 * Docker (for deployment)
 
----
 
 **Key Features**
 
@@ -35,7 +34,6 @@ Built with powerful technologies:
 *  **PDF Report Builder** with total summaries and contributors’ details
 *  **Dockerized Environment** for easy deployment
 
----
 
 ### **API Endpoints**
 
@@ -49,11 +47,9 @@ Built with powerful technologies:
 | `/api/reports/generate/`    | POST      | Generate a new report         |
 | `/api/transaction-summary/` | GET       | Get balance and summary info  |
 
----
 
 **Project Structure**
 
-```
 dusangire_backend/
 │
 ├── dusangire/                 # Django project core
@@ -70,9 +66,8 @@ dusangire_backend/
 ├── manage.py
 ├── Dockerfile
 ├── requirements.txt
-```
 
----
+
 
 **Running the Backend**
 
@@ -97,9 +92,7 @@ python manage.py createsuperuser
 
 # Run the server
 python manage.py runserver
-```
 
----
 
 ### **Run with Docker**
 
@@ -107,7 +100,7 @@ python manage.py runserver
 # Build and run the backend container
 docker build -t dusangire-backend .
 docker run -d -p 8000:8000 dusangire-backend
-```
+
 
 Access the API at:
 **`http://localhost:8000/api/`**
