@@ -24,14 +24,18 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
 User = get_user_model()
 
 # 🔹 School Serializer with pending_deletion flag
-# serializers.py
 class SchoolSerializer(serializers.ModelSerializer):
     total_received = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     pending_deletion = serializers.SerializerMethodField()
+    AccountNumber = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = School
-        fields = ['id', 'name', 'district', 'sector', 'created_at', 'total_received', 'pending_deletion', 'delete_reason', 'delete_status']
+        fields = [
+            'id', 'name', 'district', 'sector', 'created_at',
+            'AccountNumber',
+            'total_received', 'pending_deletion', 'delete_reason', 'delete_status'
+        ]
 
     def get_pending_deletion(self, obj):
         return obj.delete_status == 'pending'
@@ -53,7 +57,6 @@ class DistributionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 # 🔹 Report Serializer
-
 class ReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = Report
@@ -68,19 +71,24 @@ class TransferReceivedSerializer(serializers.ModelSerializer):
         required=False
     )
     Donor = serializers.CharField()
-    contribution_type = serializers.CharField(required=False)
+    contribution_type = serializers.CharField(required=False, allow_null=True)
     pending_deletion = serializers.SerializerMethodField()
 
     class Meta:
         model = TransferReceived
         fields = [
             'id', 'SchoolCode', 'Donor', 'Amount', 'schools',
-            'school_ids', 'AccountNumber', 'NumberOfTransactions',
+            'school_ids', 'NumberOfTransactions', 'timestamp',
             'contribution_type', 'pending_deletion', 'delete_status', 'delete_reason'
         ]
 
     def get_pending_deletion(self, obj):
         return obj.delete_status == 'pending'
+
+    def validate_school_ids(self, value):
+        if not School.objects.filter(id__in=value).count() == len(value):
+            raise serializers.ValidationError("One or more school IDs are invalid.")
+        return value
 
     def create(self, validated_data):
         school_ids = validated_data.pop('school_ids', [])
@@ -88,3 +96,12 @@ class TransferReceivedSerializer(serializers.ModelSerializer):
         if school_ids:
             transfer.SchoolName.set(school_ids)
         return transfer
+
+    def update(self, instance, validated_data):
+        school_ids = validated_data.pop('school_ids', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if school_ids is not None:
+            instance.SchoolName.set(school_ids)
+        return instance

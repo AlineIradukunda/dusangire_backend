@@ -13,12 +13,17 @@ admin.site.site_title = "Dusangire Lunch"
 admin.site.index_title = "Dusangire Lunch"
 
 # Regular models
-admin.site.register(School)
 admin.site.register(TransferReceived)
 admin.site.register(AdminUser, UserAdmin)
 admin.site.register(Distribution)
 admin.site.register(Report)
 
 # Custom Record Admin
+
+class SchoolAdmin(admin.ModelAdmin):
+    list_display = ("name", "district", "sector", "AccountNumber", "delete_status")
+    search_fields = ("name", "district", "sector", "AccountNumber")
+
+admin.site.register(School, SchoolAdmin)
 
 

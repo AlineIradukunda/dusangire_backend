@@ -41,6 +41,9 @@ urlpatterns = [
     # Confirm deletions
     path("transfers/<int:pk>/confirm/", views.ConfirmTransferDeleteView.as_view(), name="confirm-transfer-delete"),
     path("distributions/<int:pk>/confirm/", views.ConfirmDistributionDeletion.as_view(), name="confirm-distribution-delete"),
+    path("reports/generate/", views.GenerateReportView.as_view()),
+
+
 
 
 

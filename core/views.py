@@ -12,7 +12,16 @@ from io import BytesIO
 from datetime import datetime
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.negotiation import BaseContentNegotiation
 
+from rest_framework.response import Response
+
+from django.utils.dateparse import parse_date
+from openpyxl import Workbook
+from docx import Document
+from docx.shared import Inches
+from datetime import datetime
+import io
 from .models import (
     School, TransferReceived, Distribution, Report
 )
@@ -30,6 +39,14 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import permissions, generics
 from django.shortcuts import get_object_or_404
+from rest_framework.renderers import BaseRenderer
+from django.http import FileResponse
+from rest_framework.parsers import JSONParser
+
+document = Document()
+document.add_heading("Dusangire Lunch Report", level=1)
+document.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+document.save("report.docx")
 
 @api_view(["PUT"])
 @permission_classes([IsAuthenticated])
@@ -163,7 +180,7 @@ class ConfirmTransferDeleteView(APIView):
             transfer = TransferReceived.objects.get(pk=pk)
         except TransferReceived.DoesNotExist:
             return Response({"error": "Transfer not found."}, status=404)
-
+                              
         role = check_user_role(request)
         if role["status"] != "ok" or role["role"] != "superuser":
             return Response({"error": "Only superusers can confirm deletions."}, status=403)
@@ -209,7 +226,6 @@ class TransferExcelUploadView(APIView):
                 donor = row[col_index['donor']]
                 amount = row[col_index['amount']]
                 school_name = row[col_index['school_name']]
-                account_number = row[col_index.get('account_number', -1)]
                 number_of_transactions = row[col_index.get('number_of_transactions', -1)]
                 contribution_type = row[col_index.get('contribution_type', -1)]
 
@@ -220,12 +236,16 @@ class TransferExcelUploadView(APIView):
 
                 # Find all matching schools
                 matching_schools = School.objects.filter(name__iexact=school_name)
+                # Set AccountNumber on school(s) if present
+                if matching_schools.exists() and account_number:
+                    for school in matching_schools:
+                        school.AccountNumber = account_number
+                        school.save()
 
                 transfer = TransferReceived.objects.create(
                     SchoolCode=school_code,
                     Donor=donor,
                     Amount=Decimal(amount),
-                    AccountNumber=account_number,
                     NumberOfTransactions=number_of_transactions,
                     contribution_type=contribution_type
                 )
@@ -366,21 +386,206 @@ class ReportListCreateAPIView(APIView):
         return Response(serializer.errors, status=400)
 
 # ✅ Generate Report View
-class GenerateReportView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+def check_user_role(request):
+    user = request.user
+    if not user.is_authenticated:
+        return {"status": "fail", "message": "Authentication required", "code": 401}
+    if user.is_superuser:
+        return {"status": "ok", "role": "superuser"}
+    elif user.is_staff:
+        return {"status": "ok", "role": "admin"}
+    else:
+        return {"status": "ok", "role": "user"}
 
-    def get(self, request):
+class IgnoreClientContentNegotiation(BaseContentNegotiation):
+    def select_renderer(self, request, renderers, format_suffix):
+        return (None, None)
+    def select_parser(self, request, parsers):
+        for parser in parsers:
+            if isinstance(parser, JSONParser):
+                return parser
+        return parsers[0]
+
+class GenerateReportView(APIView):
+    permission_classes = [IsAuthenticated]
+    content_negotiation_class = IgnoreClientContentNegotiation
+    parser_classes = [JSONParser]
+
+    def post(self, request):
         role = check_user_role(request)
         if role["status"] != "ok":
             return Response({"detail": role["message"]}, status=role["code"])
         if role["role"] != "superuser":
             return Response({"detail": "Only superusers can generate reports."}, status=403)
 
-        pdf_content = generate_pdf_report()
-        response = HttpResponse(pdf_content, content_type='application/pdf')
-        response['Content-Disposition'] = 'attachment; filename="report.pdf"'
-        return response
+        report_type = request.data.get("report_type")
+        format = request.data.get("format", "excel")
+        selected_columns = request.data.get("columns", [])
+        selected_rows = request.data.get("selected_rows", [])
 
+        # If selected_rows are provided, skip queryset and use them directly
+        if selected_rows:
+            try:
+                if format == "excel":
+                    return self.generate_excel_from_rows(selected_rows, selected_columns, report_type)
+                elif format == "word":
+                    return self.generate_word_from_rows(selected_rows, selected_columns, report_type)
+                else:
+                    return Response({"detail": "Unsupported format"}, status=400)
+            except Exception as e:
+                return Response({"detail": f"Error generating report: {str(e)}"}, status=500)
+
+        # Fallback to queryset (no selected rows sent)
+        try:
+            queryset = self.get_queryset(report_type, request)
+        except Exception as e:
+            return Response({"detail": f"Error filtering data: {str(e)}"}, status=400)
+
+        try:
+            if format == "excel":
+                return self.generate_excel(queryset, report_type, selected_columns)
+            elif format == "word":
+                return self.generate_word(queryset, report_type, selected_columns)
+            else:
+                return Response({"detail": "Unsupported format"}, status=400)
+        except Exception as e:
+            return Response({"detail": f"Error generating report: {str(e)}"}, status=500)
+
+    def get_queryset(self, report_type, request):
+        start_date = parse_date(request.data.get("start_date")) if request.data.get("start_date") else None
+        end_date = parse_date(request.data.get("end_date")) if request.data.get("end_date") else None
+        school_code = request.data.get("school_code")
+
+        if report_type == "contributions":
+            queryset = TransferReceived.objects.all()
+            if school_code:
+                queryset = queryset.filter(SchoolCode=school_code)
+            if start_date and end_date:
+                queryset = queryset.filter(timestamp__date__range=(start_date, end_date))
+
+        elif report_type == "distributions":
+            queryset = Distribution.objects.all()
+            if school_code:
+                queryset = queryset.filter(school__name=school_code)
+            if start_date and end_date:
+                queryset = queryset.filter(distributed_on__date__range=(start_date, end_date))
+
+        elif report_type == "schools":
+            queryset = School.objects.all()
+            if school_code:
+                queryset = queryset.filter(name=school_code)
+        else:
+            raise ValueError("Invalid report type")
+
+        return queryset
+
+    def generate_excel_from_rows(self, rows, selected_columns, report_type):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Report"
+
+        headers = selected_columns or list(rows[0].keys())
+        ws.append(headers)
+
+        for row in rows:
+            ws.append([row.get(col, "") for col in headers])
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return FileResponse(output, as_attachment=True, filename=f"{report_type}_selected_rows.xlsx")
+
+    def generate_word_from_rows(self, rows, selected_columns, report_type):
+        doc = Document()
+        doc.add_heading(f"{report_type.capitalize()} Report", 0)
+
+        headers = selected_columns or list(rows[0].keys())
+        table = doc.add_table(rows=1, cols=len(headers))
+        for i, col in enumerate(headers):
+            table.rows[0].cells[i].text = col
+
+        for row_data in rows:
+            row = table.add_row().cells
+            for i, col in enumerate(headers):
+                row[i].text = str(row_data.get(col, "—"))
+
+        output = io.BytesIO()
+        doc.save(output)
+        output.seek(0)
+        return FileResponse(
+            output,
+            as_attachment=True,
+            filename=f"{report_type}_selected_rows.docx",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    def generate_excel(self, queryset, report_type, selected_columns):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Report"
+
+        field_map = self.get_field_map(report_type)
+        fields = field_map or {}
+        headers = selected_columns or list(fields.keys())
+        ws.append(headers)
+
+        for obj in queryset:
+            row = [str(fields[col](obj)) if col in fields else "—" for col in headers]
+            ws.append(row)
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return FileResponse(output, as_attachment=True, filename=f"{report_type}_report.xlsx")
+
+    def generate_word(self, queryset, report_type, selected_columns):
+        doc = Document()
+        doc.add_heading(f"{report_type.capitalize()} Report", 0)
+
+        field_map = self.get_field_map(report_type)
+        fields = field_map or {}
+        headers = selected_columns or list(fields.keys())
+
+        table = doc.add_table(rows=1, cols=len(headers))
+        for i, col in enumerate(headers):
+            table.rows[0].cells[i].text = col
+
+        for obj in queryset:
+            row = table.add_row().cells
+            for i, col in enumerate(headers):
+                row[i].text = str(fields[col](obj)) if col in fields else "—"
+
+        output = io.BytesIO()
+        doc.save(output)
+        output.seek(0)
+        return FileResponse(
+            output,
+            as_attachment=True,
+            filename=f"{report_type}_report.docx",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    def get_field_map(self, report_type):
+        return {
+            "contributions": {
+                "School Code": lambda obj: obj.SchoolCode,
+                "School Name": lambda obj: obj.schools.first().name if obj.schools.exists() else "N/A",
+                "Donor": lambda obj: obj.Donor,
+                "Amount": lambda obj: obj.Amount,
+                "Transactions": lambda obj: obj.NumberOfTransactions,
+                "Date": lambda obj: obj.timestamp.strftime("%Y-%m-%d") if obj.timestamp else "N/A"
+            },
+            "distributions": {
+                "School": lambda obj: obj.school.name if obj.school else "N/A",
+                "Amount": lambda obj: obj.amount,
+                "Date": lambda obj: obj.distributed_on.strftime("%Y-%m-%d") if obj.distributed_on else "N/A"
+            },
+            "schools": {
+                "Name": lambda obj: obj.name,
+                "Sector": lambda obj: obj.sector,
+                "District": lambda obj: obj.district
+            }
+        }
 # ✅ Transaction Summary View
 class TransactionSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -482,3 +687,24 @@ def deleted_schools_list(request):
     deleted_schools = School.objects.filter(delete_status="deleted")
     serializer = SchoolSerializer(deleted_schools, many=True)
     return Response(serializer.data)
+
+from rest_framework import mixins
+
+class TransferReceivedUpdateView(generics.UpdateAPIView):
+    queryset = TransferReceived.objects.all()
+    serializer_class = TransferReceivedSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request, pk):
+        transfer = self.get_object()
+        serializer = self.get_serializer(transfer, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        transfer = self.get_object()
+        serializer = self.get_serializer(transfer, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

@@ -16,6 +16,8 @@ class School(models.Model):
     district = models.CharField(max_length=100)
     sector = models.CharField(max_length=100)
     created_at = models.DateTimeField(auto_now_add=True)
+    AccountNumber = models.CharField(max_length=50, blank=True, null=True)
+    
 
     # Soft delete fields
     delete_status = models.CharField(
@@ -71,7 +73,6 @@ class TransferReceived(models.Model):
         null=True
     )
     SchoolName = models.ManyToManyField(School, blank=True)
-    AccountNumber = models.CharField(max_length=50, blank=True, null=True)
     NumberOfTransactions = models.IntegerField(default=0)
     timestamp = models.DateTimeField(auto_now_add=True)
 
